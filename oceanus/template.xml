@@ -1,0 +1,401 @@
+apiVersion: apiextensions.k8s.io/v1beta1
+kind: CustomResourceDefinition
+metadata:
+  name: logconfigs.cls.cloud.tencent.com
+spec:
+  group: cls.cloud.tencent.com
+  validation:
+    openAPIV3Schema:
+      type: object
+      properties:
+        spec:
+          type: object
+          properties:
+            clsDetail:
+              type: object
+              properties:
+                mode:
+                  type: string
+                topicId:
+                  type: string
+                logType:
+                  type: string
+                  enum:
+                    - minimalist_log
+                    - json_log
+                    - delimiter_log
+                    - multiline_log
+                    - fullregex_log
+                extractRule:
+                  type: object
+                  properties:
+                    timeKey:
+                      type: string
+                    timeFormat:
+                      type: string
+                    delimiter:
+                      type: string
+                    logRegex:
+                      type: string
+                    beginningRegex:
+                      type: string
+                    keys:
+                      type: array
+                      items:
+                        type: string
+                    filterKeys:
+                      type: array
+                      items:
+                        type: string
+                    filterRegex:
+                      type: array
+                      items:
+                        type: string
+            inputDetail:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum:
+                    - container_stdout
+                    - container_file
+                    - host_file
+                containerStdout:
+                  type: object
+                  properties:
+                    namespace:
+                      type: string
+                    allContainers:
+                      type: boolean
+                    includeLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    container:
+                      type: string
+                    workloads:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          namespace:
+                            type: string
+                          name:
+                            type: string
+                          kind:
+                            type: string
+                            enum:
+                              - deployment
+                              - daemonset
+                              - statefulset
+                              - job
+                              - crobjob
+                          container:
+                            type: string
+                containerFile:
+                  type: object
+                  properties:
+                    logPath:
+                      type: string
+                    filePattern:
+                      type: string
+                    namespace:
+                      type: string
+                    container:
+                      type: string
+                    includeLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+                    workload:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        kind:
+                          type: string
+                hostFile:
+                  type: object
+                  properties:
+                    logPath:
+                      type: string
+                    filePattern:
+                      type: string
+                    customLabels:
+                      type: object
+                      additionalProperties:
+                        type: string
+ 
+        status:
+          type: object
+          properties:
+            status:
+              type: string
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+  scope: Cluster
+  names:
+    plural: logconfigs
+    singular: logconfig
+    kind: LogConfig
+    shortNames:
+      - lc
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cls-provisioner
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cls-provisioner
+rules:
+- apiGroups: ["cls.cloud.tencent.com"]
+  resources: ["logconfigs"]
+  verbs: ["list", "watch", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cls-provisioner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cls-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: cls-provisioner
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cls-provisioner
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: cls-provisioner
+  template:
+    metadata:
+      labels:
+        app: cls-provisioner
+    spec:
+      volumes:
+      - name: docker-host
+        hostPath:
+          path: /var/run/docker.sock
+      containers:
+      - name: cls-provisioner
+        image: ccr.ccs.tencentyun.com/tkeimages/cls-provisioner:v0.2.0
+        imagePullPolicy: Always
+        env:
+        - name: REGION
+          value: {{.Region}}
+        - name: CRED_SOURCES
+          value: oceanus
+        - name: CLS_HOST
+          value: {{.Region}}.cls.tencentyun.com
+        - name: TKE_CLUSTER_ID
+          value: {{.ClusterID}}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        command: ["/cls-provisioner"]
+        args: ["--cred-sources=$(CRED_SOURCES)"]
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128M
+          requests:
+            cpu: 10m
+            memory: 16M
+        volumeMounts:
+        - name: docker-host
+          mountPath: /var/run/docker.sock
+      hostNetwork: true
+      serviceAccountName: cls-provisioner
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tke-log-agent
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tke-log-agent
+rules:
+  - apiGroups: ["cls.cloud.tencent.com"]
+    resources: ["logconfigs"]
+    verbs: ["list", "watch", "patch"]
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tke-log-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tke-log-agent
+subjects:
+  - kind: ServiceAccount
+    name: tke-log-agent
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: tke-log-agent
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: tke-log-agent
+  template:
+    metadata:
+      labels:
+        app: tke-log-agent
+    spec:
+      volumes:
+      - name: log-agent-root
+        hostPath:
+          path: /var/log/tke-log-agent
+      - name: host-root
+        hostPath:
+          path: /
+      - name: loglistener-etc
+        hostPath:
+          path: /usr/local/loglistener/etc
+      - name: loglistener-data
+        hostPath:
+          path: /usr/local/loglistener/data
+      - name: var-log-contaienrs
+        hostPath:
+          path: /var/log/containers
+      - name: var-log-pods
+        hostPath:
+          path: /var/log/pods
+      - name: docker-data-root
+        hostPath:
+          path: /var/lib/docker
+      - name: kubelet-root
+        hostPath:
+          path: /var/lib/kubelet
+      - name: docker-host
+        hostPath:
+          path: /var/run/docker.sock
+      - name: docker-conf
+        hostPath:
+          path: /etc/docker/daemon.json
+          type: File
+      hostNetwork: true
+      serviceAccountName: tke-log-agent
+      restartPolicy: Always
+      containers:
+      - name: log-agent
+        image: ccr.ccs.tencentyun.com/tkeimages/log-agent:v0.2.0
+        imagePullPolicy: Always
+        env:
+        - name: REGION
+          value: {{.Region}}
+        - name: CRED_SOURCES
+          value: oceanus
+        - name: CLS_HOST
+          value: {{.Region}}.cls.tencentyun.com
+        - name: TKE_CLUSTER_ID
+          value: {{.ClusterID}}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        command: ["/log-agent"]
+        args: ["--cred-sources=$(CRED_SOURCES)", "--loglistener-config=/usr/local/loglistener/etc/loglistener.conf"]
+        resources:
+          limits:
+            cpu: 400m
+            memory: 128M
+          requests:
+            cpu: 50m
+            memory: 32M
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: log-agent-root
+          mountPath: /var/log/tke-log-agent
+        - name: host-root
+          mountPath: /rootfs
+        - name: loglistener-etc
+          mountPath: /usr/local/loglistener/etc
+        - name: var-log-contaienrs
+          mountPath: /var/log/containers
+        - name: var-log-pods
+          mountPath: /var/log/pods
+        - name: docker-data-root
+          mountPath: /var/lib/docker
+        - name: kubelet-root
+          mountPath: /var/lib/kubelet
+          mountPropagation: HostToContainer
+        - name: docker-conf
+          mountPath: /etc/docker/daemon.json
+        - name: docker-host
+          mountPath: /var/run/docker.sock
+      - name: loglistener
+        image: ccr.ccs.tencentyun.com/tkeimages/loglistener:v2.3.0-oceanus
+        imagePullPolicy: Always
+        resources:
+          limits:
+            cpu: 1
+            memory: 1G
+          requests:
+            cpu: 50m
+            memory: 32M
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - name: log-agent-root
+            mountPath: /var/log/tke-log-agent
+          - name: host-root
+            mountPath: /rootfs
+          - name: loglistener-etc
+            mountPath: /usr/local/loglistener/etc
+          - name: loglistener-data
+            mountPath: /usr/local/loglistener/data
+          - name: var-log-contaienrs
+            mountPath: /var/log/containers
+          - name: var-log-pods
+            mountPath: /var/log/pods
+          - name: docker-data-root
+            mountPath: /var/lib/docker
+          - name: kubelet-root
+            mountPath: /var/lib/kubelet
+            mountPropagation: HostToContainer
